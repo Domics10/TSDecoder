@@ -1,0 +1,14 @@
+{   
+    "custom_hyper_parameters":{
+        "tsdecoder":{
+            "path": "./saved_models/",
+            "epochs": 400,
+            "c1": 4,
+            "heads": 3,
+            "d_model":90,
+            "lr":0.01,
+            "batch_size":32,
+            "name": "tsdecoder"
+        }
+    }
+}
