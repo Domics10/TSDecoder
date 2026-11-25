@@ -4,6 +4,7 @@ POST /predict
   ingresso: {"time_series": [{"timestamp", "value"}], "model", "request_id", "auth", "horizon"?}
   uscita:   {"predictions": [{"timestamp", "value"}], "request_id", "auth"}
 GET /status
+GET /models  -> [{"name", "min_points"}]
 """
 import os
 import sys
@@ -26,6 +27,11 @@ def first_problem(checks):
 @app.get("/status")
 def status():
     return jsonify({"status": "ok", "models": sorted(FORECASTERS)})
+
+
+@app.get("/models")
+def models():
+    return jsonify([{"name": name, "min_points": f.min_points} for name, f in sorted(FORECASTERS.items())])
 
 
 @app.post("/predict")

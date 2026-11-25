@@ -18,8 +18,11 @@ Variabili d'ambiente: `PORT` (default 5002), `DEFAULT_HORIZON` (punti da prevede
 
 Modelli disponibili:
 - `linear`: regressione lineare, da 2 punti in su;
+- `seasonal`: ripete il valore di 12 passi prima (stagionale naive), da 12 punti in su;
 - `TSDecoder`: il decoder addestrato, servono almeno 90 punti (la finestra si riporta nella scala dei
   dati di addestramento e le previsioni tornano nella scala dell'ingresso).
+
+`GET /models`: `[{"name", "min_points"}]`, l'elenco qui sopra.
 
 `POST /predict`
 

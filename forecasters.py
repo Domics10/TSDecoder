@@ -29,6 +29,18 @@ class LinearForecaster:
         return (slope * future + intercept).tolist()
 
 
+class SeasonalForecaster:
+    """Ripete il valore di un periodo prima (stagionale naive). Con dati mensili, periodo 12."""
+
+    def __init__(self, period=12):
+        self.period = period
+        self.min_points = period
+
+    def __call__(self, values, horizon):
+        last_period = values[-self.period:]
+        return [float(last_period[i % self.period]) for i in range(horizon)]
+
+
 class TSDecoderForecaster:
     """Il decoder addestrato in questo repo, usato in sola inferenza.
 
@@ -74,13 +86,16 @@ class TSDecoderForecaster:
 def build_registry():
     return {
         "linear": LinearForecaster(),
+        "seasonal": SeasonalForecaster(),
         "TSDecoder": TSDecoderForecaster.load(),
     }
 
 
 def next_timestamps(timestamps, horizon):
     """Timestamp successivi all'ultimo, con il passo della serie in ingresso."""
-    index = pd.DatetimeIndex(pd.to_datetime(timestamps, utc=True))
+    # format="ISO8601": le date possono avere forme diverse nella stessa serie (es. "2026-01-01" seguite
+    # da previsioni "2026-02-01T00:00:00Z" quando due modelli sono in catena).
+    index = pd.DatetimeIndex(pd.to_datetime(timestamps, utc=True, format="ISO8601"))
     freq = pd.infer_freq(index) if len(index) >= 3 else None
     step = freq or (index[1:] - index[:-1]).median()
     future = pd.date_range(start=index[-1], periods=horizon + 1, freq=step)[1:]

@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from forecasters import LinearForecaster, TSDecoderForecaster, next_timestamps, rescale
+from forecasters import LinearForecaster, SeasonalForecaster, TSDecoderForecaster, next_timestamps, rescale
 
 DECODER = TSDecoderForecaster.load()
 
@@ -29,6 +29,14 @@ class LinearForecasterTest(unittest.TestCase):
         np.testing.assert_allclose(LinearForecaster()([1, 3, 5], 3), [7, 9, 11])
 
 
+class SeasonalForecasterTest(unittest.TestCase):
+    def test_ripete_l_ultimo_periodo(self):
+        self.assertEqual(SeasonalForecaster(period=3)([9, 1, 2, 3], 5), [1, 2, 3, 1, 2])
+
+    def test_serve_un_periodo_intero(self):
+        self.assertEqual(SeasonalForecaster().min_points, 12)
+
+
 class NextTimestampsTest(unittest.TestCase):
     def test_passo_giornaliero(self):
         self.assertEqual(
@@ -47,6 +55,16 @@ class NextTimestampsTest(unittest.TestCase):
             next_timestamps(["2026-01-01T00:00:00Z", "2026-01-01T06:00:00Z"], 1),
             ["2026-01-01T12:00:00Z"],
         )
+
+    def test_forme_diverse_nella_stessa_serie(self):
+        # Caso dei modelli in catena: date del CSV seguite da previsioni in ISO completo.
+        self.assertEqual(
+            next_timestamps(["2026-01-01", "2026-02-01", "2026-03-01T00:00:00Z"], 1),
+            ["2026-04-01T00:00:00Z"],
+        )
+
+    def test_anno_e_mese(self):
+        self.assertEqual(next_timestamps(["1982-01", "1982-02", "1982-03"], 1), ["1982-04-01T00:00:00Z"])
 
 
 class TSDecoderForecasterTest(unittest.TestCase):
@@ -81,7 +99,11 @@ class AppTest(unittest.TestCase):
         return [{"timestamp": f"2026-01-{i + 1:02d}", "value": float(i)} for i in range(n)]
 
     def test_status(self):
-        self.assertEqual(self.client.get("/status").get_json()["models"], ["TSDecoder", "linear"])
+        self.assertEqual(self.client.get("/status").get_json()["models"], ["TSDecoder", "linear", "seasonal"])
+
+    def test_elenco_modelli_con_requisiti(self):
+        models = {m["name"]: m["min_points"] for m in self.client.get("/models").get_json()}
+        self.assertEqual(models, {"TSDecoder": 90, "linear": 2, "seasonal": 12})
 
     def test_previsione_lineare(self):
         body = self.predict(model="linear", time_series=self.series(3), request_id="r1",
