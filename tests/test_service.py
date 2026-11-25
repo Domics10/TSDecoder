@@ -86,6 +86,45 @@ class TSDecoderForecasterTest(unittest.TestCase):
         self.assertFalse(np.allclose(DECODER(wave(90), 6), DECODER(wave(90, offset=3), 6)))
 
 
+class ForecastErrorsTest(unittest.TestCase):
+    def test_metriche_base(self):
+        from model.metrics import ForecastErrors
+        m = ForecastErrors([2, 4, 6], [1, 4, 8]).summary()
+        self.assertAlmostEqual(m["me"], (1 + 0 - 2) / 3)
+        self.assertAlmostEqual(m["mae"], 1)
+        self.assertAlmostEqual(m["rmse"], (5 / 3) ** 0.5)
+        self.assertAlmostEqual(m["mape"], (1 + 0 + 0.25) / 3)
+        self.assertEqual(m["points"], 3)
+
+    def test_niente_divisioni_per_zero(self):
+        from model.metrics import ForecastErrors
+        m = ForecastErrors([1, 1], [0, 0]).summary()
+        self.assertIsNone(m["mape"])
+        self.assertIsNone(m["corr"])
+        self.assertAlmostEqual(m["minmax"], 1.0)  # massimo errore relativo
+        self.assertAlmostEqual(m["smape"], 2.0)
+
+    def test_mase_rispetto_al_naive(self):
+        from model.metrics import ForecastErrors
+        # Storico che sale di 1 a passo: il naive sbaglia di 1; qui l'errore medio è 0.5 -> MASE 0.5.
+        self.assertAlmostEqual(ForecastErrors([4.5], [5], history=[1, 2, 3, 4]).mase(), 0.5)
+        self.assertIsNone(ForecastErrors([1], [1]).mase())
+
+    def test_autocorrelazione_errori(self):
+        from model.metrics import ForecastErrors
+        self.assertAlmostEqual(ForecastErrors([1, -1, 1, -1], [0, 0, 0, 0]).acf1(), -0.75)
+
+    def test_compatibile_con_main(self):
+        from model.metrics import forecast_accuracy
+        self.assertEqual(set(forecast_accuracy([1, 2, 3], [1, 2, 4])),
+                         {"mape", "me", "mae", "mpe", "rmse", "corr", "minmax", "acfe"})
+
+    def test_lunghezze_diverse(self):
+        from model.metrics import ForecastErrors
+        with self.assertRaises(ValueError):
+            ForecastErrors([1, 2], [1])
+
+
 class AppTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -121,6 +160,12 @@ class AppTest(unittest.TestCase):
         self.assertEqual(len(body["predictions"]), 2)
         response = self.predict(model="linear", time_series=self.series(3), env={"DEFAULT_HORIZON": "tanti"})
         self.assertEqual(response.status_code, 400)
+
+    def test_endpoint_metriche(self):
+        body = self.client.post("/metrics", json={"forecast": [2, 4], "actual": [1, 4], "history": [0, 1, 2]}).get_json()
+        self.assertAlmostEqual(body["mae"], 0.5)
+        self.assertAlmostEqual(body["mase"], 0.5)
+        self.assertEqual(self.client.post("/metrics", json={"forecast": [1], "actual": []}).status_code, 400)
 
     def test_rifiuti_con_motivo(self):
         cases = [

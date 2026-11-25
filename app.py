@@ -6,6 +6,9 @@ POST /predict
   uscita:   {"predictions": [{"timestamp", "value"}], "request_id", "auth"}
 GET /status
 GET /models  -> [{"name", "min_points"}]
+POST /metrics
+  ingresso: {"forecast": [numeri], "actual": [numeri], "history"?: [numeri], "season"?: intero}
+  uscita:   errori della previsione (me, mae, rmse, mape, mpe, smape, mase, corr, minmax, acf1, points)
 """
 import os
 import sys
@@ -13,6 +16,7 @@ import sys
 from flask import Flask, jsonify, request
 
 from forecasters import build_registry, next_timestamps
+from model.metrics import ForecastErrors
 
 DEFAULT_HORIZON = os.environ.get("DEFAULT_HORIZON", "10")
 
@@ -80,6 +84,17 @@ def predict():
         "request_id": payload.get("request_id"),
         "auth": payload.get("auth"),
     })
+
+
+@app.post("/metrics")
+def metrics():
+    payload = request.get_json(silent=True) or {}
+    try:
+        errors = ForecastErrors(payload.get("forecast"), payload.get("actual"),
+                                payload.get("history"), payload.get("season", 1))
+    except (TypeError, ValueError) as exc:
+        return jsonify({"errore": f"Dati non validi per il calcolo degli errori: {exc}"}), 400
+    return jsonify(errors.summary())
 
 
 if __name__ == "__main__":

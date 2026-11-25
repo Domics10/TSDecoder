@@ -26,6 +26,12 @@ Modelli disponibili:
 
 `GET /models`: `[{"name", "min_points"}]`, l'elenco qui sopra.
 
+`POST /metrics`: errori di una previsione (`model/metrics.py`, classe `ForecastErrors`).
+Ingresso `{"forecast": [...], "actual": [...], "history"?: [...], "season"?: 1}`; uscita `me`, `mae`,
+`rmse`, `mape`, `mpe`, `smape`, `mase` (sotto 1 batte la previsione naive sullo storico), `corr`,
+`minmax`, `acf1` (autocorrelazione degli errori) e `points`. Una metrica che non si può calcolare
+(es. MAPE con valori osservati tutti a zero) vale `null`.
+
 `POST /predict`
 
 ```bash
