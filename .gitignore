@@ -1,0 +1,4 @@
+# File generati dal sistema o da Python
+.DS_Store
+__pycache__/
+*.pyc
