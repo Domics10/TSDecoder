@@ -1,7 +1,7 @@
 """Forecaster registrati per nome.
 
-Ogni forecaster riceve la lista dei valori e l'orizzonte e restituisce i valori
-previsti; `min_points` dice quanti punti servono almeno in ingresso.
+Ogni forecaster riceve la lista dei valori, l'orizzonte e le impostazioni della richiesta (le variabili
+"env", tutte stringhe) e restituisce i valori previsti; `min_points` dice quanti punti servono almeno.
 Un modello nuovo si aggiunge con una classe e una voce in `build_registry`.
 """
 import numpy as np
@@ -22,23 +22,36 @@ class LinearForecaster:
 
     min_points = 2
 
-    def __call__(self, values, horizon):
+    def __call__(self, values, horizon, settings=None):
         x = np.arange(len(values))
         slope, intercept = np.polyfit(x, values, 1)
         future = np.arange(len(values), len(values) + horizon)
         return (slope * future + intercept).tolist()
 
 
+class NaiveForecaster:
+    """Ripete l'ultimo valore (random walk): il riferimento da battere su serie come i prezzi."""
+
+    min_points = 1
+
+    def __call__(self, values, horizon, settings=None):
+        return [float(values[-1])] * horizon
+
+
 class SeasonalForecaster:
-    """Ripete il valore di un periodo prima (stagionale naive). Con dati mensili, periodo 12."""
+    """Ripete il valore di un periodo prima (stagionale naive). Periodo di base 12 (dati mensili);
+    si cambia con la variabile SEASON_PERIOD (es. 5 per i giorni di borsa di una settimana)."""
 
     def __init__(self, period=12):
         self.period = period
         self.min_points = period
 
-    def __call__(self, values, horizon):
-        last_period = values[-self.period:]
-        return [float(last_period[i % self.period]) for i in range(horizon)]
+    def __call__(self, values, horizon, settings=None):
+        period = int((settings or {}).get("SEASON_PERIOD", self.period))
+        if not 1 <= period <= len(values):
+            raise ValueError(f"SEASON_PERIOD deve stare fra 1 e {len(values)}")
+        last_period = values[-period:]
+        return [float(last_period[i % period]) for i in range(horizon)]
 
 
 class TSDecoderForecaster:
@@ -70,7 +83,7 @@ class TSDecoderForecaster:
         train = series.iloc[: int(len(series) * train_ratio)]
         return cls(decoder, Forecaster, config.get_d_model(), (train.min(), train.max()))
 
-    def __call__(self, values, horizon):
+    def __call__(self, values, horizon, settings=None):
         import torch
 
         window = np.asarray(values[-self.min_points:], dtype=float)
@@ -85,6 +98,7 @@ class TSDecoderForecaster:
 
 def build_registry():
     return {
+        "naive": NaiveForecaster(),
         "linear": LinearForecaster(),
         "seasonal": SeasonalForecaster(),
         "TSDecoder": TSDecoderForecaster.load(),
@@ -98,5 +112,45 @@ def next_timestamps(timestamps, horizon):
     index = pd.DatetimeIndex(pd.to_datetime(timestamps, utc=True, format="ISO8601"))
     freq = pd.infer_freq(index) if len(index) >= 3 else None
     step = freq or (index[1:] - index[:-1]).median()
+    # Serie di soli giorni feriali a passo giornaliero (es. la borsa, con le sue festività): si prosegue
+    # con i giorni lavorativi, non con sabato e domenica.
+    if freq is None and len(index) >= 10 and (index.dayofweek < 5).all() and step <= pd.Timedelta(days=1):
+        step = "B"
     future = pd.date_range(start=index[-1], periods=horizon + 1, freq=step)[1:]
     return [ts.isoformat().replace("+00:00", "Z") for ts in future]
+
+
+def fit_ar(values, order):
+    """Coefficienti di un AR(order) con intercetta, stimati sulla serie standardizzata (minimi quadrati).
+    Restituisce (coefficienti, numero di campioni): è tutto ciò che un partecipante condivide."""
+    z = np.asarray(values, dtype=float)
+    z = (z - z.mean()) / (z.std() or 1.0)
+    rows = np.array([z[i:i + order] for i in range(len(z) - order)])
+    design = np.hstack([rows, np.ones((len(rows), 1))])
+    coefficients, *_ = np.linalg.lstsq(design, z[order:], rcond=None)
+    return coefficients, len(rows)
+
+
+def federated_ar(target, clients, order, horizon):
+    """AR federato (FedAvg, simulato): ogni partecipante (il bersaglio e i client) stima il proprio AR
+    sui propri dati; si mediano solo i coefficienti, pesati per numero di campioni, e si prevede il
+    bersaglio con i coefficienti comuni, nella sua scala."""
+    participants = [target, *clients]
+    if any(len(series) <= order + 1 for series in participants):
+        raise ValueError(f"ogni serie deve avere più di {order + 1} punti per un AR({order})")
+    fits = [fit_ar(series, order) for series in participants]
+    weights = np.array([n for _, n in fits], dtype=float)
+    shared = np.sum([c * w for (c, _), w in zip(fits, weights)], axis=0) / weights.sum()
+    values = np.asarray(target, dtype=float)
+    mean, std = values.mean(), values.std() or 1.0
+    window = list((values[-order:] - mean) / std)
+    forecast = []
+    for _ in range(horizon):  # ricorsione autoregressiva: ogni passo usa le previsioni precedenti
+        nxt = float(np.dot(shared[:-1], window[-order:]) + shared[-1])
+        forecast.append(nxt)
+        window.append(nxt)
+    return {
+        "values": [v * std + mean for v in forecast],
+        "coefficients": shared.tolist(),
+        "participants": [{"samples": n, "coefficients": c.tolist()} for c, n in fits],
+    }

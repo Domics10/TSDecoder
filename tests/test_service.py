@@ -5,8 +5,10 @@
 import unittest
 
 import numpy as np
+import pandas as pd
 
-from forecasters import LinearForecaster, SeasonalForecaster, TSDecoderForecaster, next_timestamps, rescale
+from forecasters import (LinearForecaster, NaiveForecaster, SeasonalForecaster, TSDecoderForecaster,
+                         federated_ar, fit_ar, next_timestamps, rescale)
 
 DECODER = TSDecoderForecaster.load()
 
@@ -29,9 +31,39 @@ class LinearForecasterTest(unittest.TestCase):
         np.testing.assert_allclose(LinearForecaster()([1, 3, 5], 3), [7, 9, 11])
 
 
+class NaiveForecasterTest(unittest.TestCase):
+    def test_ripete_l_ultimo_valore(self):
+        self.assertEqual(NaiveForecaster()([1, 2, 7], 3), [7.0, 7.0, 7.0])
+
+
+class FederatedTest(unittest.TestCase):
+    def test_ar_ritrova_una_ricorrenza(self):
+        # Serie che alterna: AR(1) con coefficiente negativo.
+        coefficients, samples = fit_ar([1, -1, 1, -1, 1, -1, 1, -1], 1)
+        self.assertLess(coefficients[0], -0.9)
+        self.assertEqual(samples, 7)
+
+    def test_fedavg_pesa_i_partecipanti_e_resta_nella_scala_del_bersaglio(self):
+        wave = [np.sin(i / 2) for i in range(60)]
+        target = [100 + 10 * v for v in wave]
+        result = federated_ar(target, [wave, [3 * v for v in wave]], order=3, horizon=4)
+        self.assertEqual(len(result["values"]), 4)
+        self.assertEqual(len(result["participants"]), 3)
+        self.assertTrue(all(85 < v < 115 for v in result["values"]))
+
+    def test_serie_troppo_corte(self):
+        with self.assertRaises(ValueError):
+            federated_ar([1, 2, 3], [], order=5, horizon=2)
+
+
 class SeasonalForecasterTest(unittest.TestCase):
     def test_ripete_l_ultimo_periodo(self):
         self.assertEqual(SeasonalForecaster(period=3)([9, 1, 2, 3], 5), [1, 2, 3, 1, 2])
+
+    def test_periodo_dalle_variabili(self):
+        self.assertEqual(SeasonalForecaster()([1, 2, 3, 4, 5], 4, {"SEASON_PERIOD": "2"}), [4, 5, 4, 5])
+        with self.assertRaises(ValueError):
+            SeasonalForecaster()([1, 2], 1, {"SEASON_PERIOD": "9"})
 
     def test_serve_un_periodo_intero(self):
         self.assertEqual(SeasonalForecaster().min_points, 12)
@@ -55,6 +87,11 @@ class NextTimestampsTest(unittest.TestCase):
             next_timestamps(["2026-01-01T00:00:00Z", "2026-01-01T06:00:00Z"], 1),
             ["2026-01-01T12:00:00Z"],
         )
+
+    def test_giorni_di_borsa_saltano_il_fine_settimana(self):
+        days = pd.bdate_range("2026-01-05", periods=15).strftime("%Y-%m-%d").tolist()
+        days.remove("2026-01-19")  # una festività: la frequenza non si deduce più
+        self.assertEqual(next_timestamps(days, 2), ["2026-01-26T00:00:00Z", "2026-01-27T00:00:00Z"])
 
     def test_forme_diverse_nella_stessa_serie(self):
         # Caso dei modelli in catena: date del CSV seguite da previsioni in ISO completo.
@@ -138,11 +175,11 @@ class AppTest(unittest.TestCase):
         return [{"timestamp": f"2026-01-{i + 1:02d}", "value": float(i)} for i in range(n)]
 
     def test_status(self):
-        self.assertEqual(self.client.get("/status").get_json()["models"], ["TSDecoder", "linear", "seasonal"])
+        self.assertEqual(self.client.get("/status").get_json()["models"], ["TSDecoder", "linear", "naive", "seasonal"])
 
     def test_elenco_modelli_con_requisiti(self):
         models = {m["name"]: m["min_points"] for m in self.client.get("/models").get_json()}
-        self.assertEqual(models, {"TSDecoder": 90, "linear": 2, "seasonal": 12})
+        self.assertEqual(models, {"TSDecoder": 90, "linear": 2, "naive": 1, "seasonal": 12})
 
     def test_previsione_lineare(self):
         body = self.predict(model="linear", time_series=self.series(3), request_id="r1",
@@ -166,6 +203,13 @@ class AppTest(unittest.TestCase):
         self.assertAlmostEqual(body["mae"], 0.5)
         self.assertAlmostEqual(body["mase"], 0.5)
         self.assertEqual(self.client.post("/metrics", json={"forecast": [1], "actual": []}).status_code, 400)
+
+    def test_endpoint_federato(self):
+        series = lambda scale: [{"timestamp": f"2026-01-{i + 1:02d}", "value": scale * np.sin(i / 2)} for i in range(28)]
+        body = self.client.post("/federated", json={"target": series(1), "clients": [series(5)], "order": 3, "horizon": 3}).get_json()
+        self.assertEqual([p["timestamp"] for p in body["predictions"]],
+                         ["2026-01-29T00:00:00Z", "2026-01-30T00:00:00Z", "2026-01-31T00:00:00Z"])
+        self.assertEqual(self.client.post("/federated", json={"target": []}).status_code, 400)
 
     def test_rifiuti_con_motivo(self):
         cases = [

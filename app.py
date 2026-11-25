@@ -6,6 +6,9 @@ POST /predict
   uscita:   {"predictions": [{"timestamp", "value"}], "request_id", "auth"}
 GET /status
 GET /models  -> [{"name", "min_points"}]
+POST /federated
+  ingresso: {"target": [{"timestamp", "value"}], "clients": [[{"timestamp", "value"}], …], "order"?: 5, "horizon"?, "env"?}
+  uscita:   {"predictions": [...], "coefficients": [...], "participants": [{"samples", "coefficients"}]}
 POST /metrics
   ingresso: {"forecast": [numeri], "actual": [numeri], "history"?: [numeri], "season"?: intero}
   uscita:   errori della previsione (me, mae, rmse, mape, mpe, smape, mase, corr, minmax, acf1, points)
@@ -15,7 +18,7 @@ import sys
 
 from flask import Flask, jsonify, request
 
-from forecasters import build_registry, next_timestamps
+from forecasters import build_registry, federated_ar, next_timestamps
 from model.metrics import ForecastErrors
 
 DEFAULT_HORIZON = os.environ.get("DEFAULT_HORIZON", "10")
@@ -73,8 +76,10 @@ def predict():
         return jsonify({"errore": problem}), 400
 
     try:
-        values = forecaster([point["value"] for point in series], horizon)
+        values = forecaster([point["value"] for point in series], horizon, payload.get("env") or {})
         timestamps = next_timestamps([point["timestamp"] for point in series], horizon)
+    except ValueError as exc:  # impostazione non valida per quel modello: si corregge
+        return jsonify({"errore": f"{payload.get('model')}: {exc}."}), 400
     except Exception as exc:  # guasto di calcolo: si logga e si risponde 500
         print(f"Errore di previsione ({payload.get('request_id')}): {exc!r}", file=sys.stderr)
         return jsonify({"errore": "Errore nel calcolo della previsione."}), 500
@@ -83,6 +88,31 @@ def predict():
         "predictions": [{"timestamp": ts, "value": v} for ts, v in zip(timestamps, values)],
         "request_id": payload.get("request_id"),
         "auth": payload.get("auth"),
+    })
+
+
+@app.post("/federated")
+def federated():
+    payload = request.get_json(silent=True) or {}
+    target = payload.get("target") or []
+    clients = payload.get("clients") or []
+    horizon = as_horizon(payload.get("horizon", setting(payload, "DEFAULT_HORIZON", DEFAULT_HORIZON)))
+    order = as_horizon(payload.get("order", 5))
+    problem = first_problem([
+        (lambda: not target, lambda: "Serve la serie bersaglio (target)."),
+        (lambda: horizon is None or order is None, lambda: "Orizzonte e ordine devono essere interi positivi."),
+    ])
+    if problem:
+        return jsonify({"errore": problem}), 400
+    try:
+        result = federated_ar([p["value"] for p in target], [[p["value"] for p in c] for c in clients], order, horizon)
+        timestamps = next_timestamps([p["timestamp"] for p in target], horizon)
+    except (ValueError, KeyError, TypeError) as exc:
+        return jsonify({"errore": f"Modello federato: {exc}."}), 400
+    return jsonify({
+        "predictions": [{"timestamp": ts, "value": v} for ts, v in zip(timestamps, result["values"])],
+        "coefficients": result["coefficients"],
+        "participants": result["participants"],
     })
 
 

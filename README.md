@@ -19,12 +19,23 @@ Variabili d'ambiente: `PORT` (default 5002), `DEFAULT_HORIZON` (punti da prevede
 vince su quella del processo; `horizon` nella richiesta vince su tutte e due.
 
 Modelli disponibili:
+- `naive`: ripete l'ultimo valore, da 1 punto in su (il riferimento più semplice da battere);
 - `linear`: regressione lineare, da 2 punti in su;
-- `seasonal`: ripete il valore di 12 passi prima (stagionale naive), da 12 punti in su;
+- `seasonal`: ripete il valore di una stagione prima (stagionale naive); stagione di 12 passi o
+  `SEASON_PERIOD` nel campo `env` (es. 5 per i giorni di borsa), da una stagione di punti in su;
 - `TSDecoder`: il decoder addestrato, servono almeno 90 punti (la finestra si riporta nella scala dei
   dati di addestramento e le previsioni tornano nella scala dell'ingresso).
 
 `GET /models`: `[{"name", "min_points"}]`, l'elenco qui sopra.
+
+Date delle previsioni: proseguono con il passo della serie; una serie giornaliera di soli giorni feriali
+(es. prezzi di borsa) prosegue sui giorni feriali.
+
+`POST /federated`: modello autoregressivo addestrato in modo federato (FedAvg, simulato) su una serie
+bersaglio e su altre serie «client»: ognuna stima i suoi coefficienti, si condividono solo quelli, pesati
+per numero di campioni, e si prevede in coda al bersaglio. Ingresso
+`{"target": [{timestamp, value}], "clients": [[{timestamp, value}], ...], "order"?: 5, "horizon"?}`;
+uscita `predictions`, `coefficients` (quelli federati) e `participants` (campioni e coefficienti di ognuno).
 
 `POST /metrics`: errori di una previsione (`model/metrics.py`, classe `ForecastErrors`).
 Ingresso `{"forecast": [...], "actual": [...], "history"?: [...], "season"?: 1}`; uscita `me`, `mae`,
