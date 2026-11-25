@@ -1,7 +1,7 @@
 # Immagine del servizio di previsione (solo inferenza). Per l'addestramento c'è Dockerfile.
 FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MPLBACKEND=Agg PORT=5002
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PORT=5002
 WORKDIR /home/app
 
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.3.1

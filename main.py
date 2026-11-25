@@ -1,49 +1,42 @@
+"""Validazione del decoder sui pesi salvati; con --addestra prima lo addestra (e sovrascrive i pesi).
+
+    python main.py             # validazione: grafico e metriche in plots/
+    python main.py --addestra  # addestramento (loss in saved_models/), poi validazione
+"""
+import argparse
 import utils
-import seaborn as sns
-import model
-import matplotlib.pyplot as plt
+from utils import plots
+from model.decoder import decoder_training_pipeline, decoder_forecasting_pipeline
+from model.metrics import forecast_accuracy
 import torch
 import pandas as pd
 
-def split_dataframe(data, train_ratio=0.8, val_ratio=0.2):
-    total_length = len(data)
-    train_length = int(total_length * train_ratio)
-    val_length = int(total_length * val_ratio)
-    test_length = total_length - train_length - val_length
-
-    train_data = data.iloc[:train_length]
-    val_data = data.iloc[train_length:train_length + val_length]
-    test_data = data.iloc[train_length + val_length:]
-
-    return train_data, val_data, test_data
+def split_dataframe(data, train_ratio=0.8):
+    train_length = int(len(data) * train_ratio)
+    return data.iloc[:train_length], data.iloc[train_length:]
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument('--addestra', action='store_true', help='addestra prima di validare (sovrascrive i pesi salvati)')
+    args = parser.parse_args()
     csv = utils.load_to_dataframe('./data/air-temp-monthly-mean.csv')
     csv.rename(columns={"month":"ds", "mean_temp":"y"}, inplace=True)
-    train_data, val_data, _ = split_dataframe(csv)
-    #training(train_data, val_data)
+    train_data, val_data = split_dataframe(csv)
+    if args.addestra:
+        training(train_data, val_data)
     forecasting(train_data, val_data)
 
 def training(train_data, val_data):
-    loss_over_epoch = model.decoder_training_pipeline(train_data, val_data)
-    sns.set_style('darkgrid')
-    fig, _ = plt.subplots(figsize=(12, 6), dpi=100)
-    plt.plot(loss_over_epoch['epoch'], loss_over_epoch['t_loss'], label='T loss')
-    plt.plot(loss_over_epoch['epoch'], loss_over_epoch['v_loss'], label='V loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.title('Loss over Epochs')
-    fig.savefig(f'./saved_models/loss_over_epochs.jpg')
+    loss_over_epoch = decoder_training_pipeline(train_data, val_data)
+    plots.plot_loss(loss_over_epoch, './saved_models/loss_over_epochs.jpg')
 
 def forecasting(train_data, val_data):
-    starting_window = torch.tensor(train_data['y'][-90:].values, dtype=torch.float)
-    forecast = model.decoder_forecasting_pipeline(starting_window, len(val_data))
-    forecast = pd.Series(forecast.squeeze())
-    val_data.loc[:, 'yhat'] = forecast.values
-    metrics = pd.DataFrame(model.forecast_accuracy(val_data['yhat'].values, val_data['y'].values), index=[0])
-    utils.instance_path.set_path(f'./plots/',f'forecast_')
-    utils.decoder_plotter(val_data, False, metrics).plot_helper()
+    window = utils.utils().get_d_model()
+    starting_window = torch.tensor(train_data['y'][-window:].values, dtype=torch.float)
+    forecast = decoder_forecasting_pipeline(starting_window, len(val_data))
+    val_data = val_data.assign(yhat=pd.Series(forecast.squeeze()).values)
+    metrics = pd.DataFrame(forecast_accuracy(val_data['yhat'].values, val_data['y'].values), index=[0])
+    plots.plot_validation(val_data, metrics, plots.create_folder_with_timestamp('./plots', 'forecast'))
 
 if __name__ == '__main__':
     main()

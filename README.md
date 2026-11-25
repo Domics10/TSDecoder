@@ -3,9 +3,21 @@
 Transformer decoder per previsioni su serie temporali (self-attention multi-head, skip connection,
 layer norm, dropout), addestrato sulle temperature medie mensili in `data/`.
 
-- `main.py`: addestramento e validazione (split 80/20, finestra di 90 passi; iperparametri in `model/model.json`).
+- `main.py`: validazione sui pesi salvati (grafico e metriche in `plots/`); con `--addestra` prima
+  addestra e sovrascrive i pesi, salvando quelli dell'epoca con la loss di validazione minima. Split
+  80/20, finestra di `d_model` passi; iperparametri (epoche, lr, batch, teste, ...) in `model/model.json`.
 - `saved_models/`: i pesi addestrati.
 - `app.py` + `forecasters.py`: servizio HTTP di sola inferenza.
+
+## Addestramento e validazione
+
+```bash
+docker build -t tsdecoder .
+docker run --rm tsdecoder                            # validazione
+docker run --rm tsdecoder python main.py --addestra  # addestramento, poi validazione
+```
+
+Dipendenze in `requirements.txt` (quelle del servizio, più leggere, in `requirements-app.txt`).
 
 ## Servizio di previsione
 
@@ -16,19 +28,20 @@ docker run -p 5002:5002 tsdecoder-app
 
 Variabili d'ambiente: `PORT` (default 5002), `DEFAULT_HORIZON` (punti da prevedere, default 10).
 `DEFAULT_HORIZON` si può anche mandare con la richiesta, nel campo `env` (`{"env": {"DEFAULT_HORIZON": "5"}}`):
-vince su quella del processo; `horizon` nella richiesta vince su tutte e due.
+vince su quella del processo; `horizon` nella richiesta vince su tutte e due. L'orizzonte sta fra 1 e 1000.
 
 Modelli disponibili:
-- `naive`: ripete l'ultimo valore, da 1 punto in su (il riferimento più semplice da battere);
+- `naive`: ripete l'ultimo valore, da 2 punti in su (il riferimento più semplice da battere);
 - `linear`: regressione lineare, da 2 punti in su;
 - `seasonal`: ripete il valore di una stagione prima (stagionale naive); stagione di 12 passi o
-  `SEASON_PERIOD` nel campo `env` (es. 5 per i giorni di borsa), da una stagione di punti in su;
+  `SEASON_PERIOD` nel campo `env` (es. 5 per i giorni di borsa), da una stagione di punti in su
+  (`GET /models` dichiara 2, il minimo con `SEASON_PERIOD` più piccolo; il resto lo controlla la previsione);
 - `TSDecoder`: il decoder addestrato, servono almeno 90 punti (la finestra si riporta nella scala dei
   dati di addestramento e le previsioni tornano nella scala dell'ingresso).
 
 `GET /models`: `[{"name", "min_points"}]`, l'elenco qui sopra.
 
-Date delle previsioni: proseguono con il passo della serie; una serie giornaliera di soli giorni feriali
+Date delle previsioni: proseguono con il passo della serie (servono almeno due date); una serie giornaliera di soli giorni feriali
 (es. prezzi di borsa) prosegue sui giorni feriali.
 
 `POST /federated`: modello autoregressivo addestrato in modo federato (FedAvg, simulato) su una serie
@@ -80,5 +93,6 @@ errore assoluto medio in °C sui mesi 1..10:
 | TSDecoder sulla finestra grezza | 1,37 |
 
 Il decoder funziona e segue la stagionalità, ma oggi non batte i metodi banali. `main.py` (92 passi
-autoregressivi, dropout attivo) dà MAPE 40%: la previsione crolla dopo pochi mesi, come già nel 2023.
+autoregressivi) dava MAPE 40% con il dropout lasciato attivo per errore; corretto, dà MAPE 33%: la
+previsione crolla comunque dopo pochi mesi, come già nel 2023.
 Va riaddestrato prima di preferirlo agli altri.

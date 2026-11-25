@@ -2,7 +2,8 @@
 
 POST /predict
   ingresso: {"time_series": [{"timestamp", "value"}], "model", "request_id", "auth", "horizon"?, "env"?}
-  "env": variabili del container impostate dal client (es. DEFAULT_HORIZON); valgono per questa richiesta.
+  "env": variabili del container impostate dal client (DEFAULT_HORIZON, SEASON_PERIOD); valgono per questa richiesta.
+  orizzonte: "horizon", altrimenti DEFAULT_HORIZON di "env", altrimenti quella del processo; fra 1 e 1000.
   uscita:   {"predictions": [{"timestamp", "value"}], "request_id", "auth"}
 GET /status
 GET /models  -> [{"name", "min_points"}]
@@ -22,24 +23,36 @@ from forecasters import build_registry, federated_ar, next_timestamps
 from model.metrics import ForecastErrors
 
 DEFAULT_HORIZON = os.environ.get("DEFAULT_HORIZON", "10")
+MAX_HORIZON = 1000
 
 app = Flask(__name__)
 FORECASTERS = build_registry()
 
 
+def read_payload():
+    """Corpo JSON della richiesta; un corpo che non è un oggetto vale come vuoto."""
+    payload = request.get_json(silent=True)
+    return payload if isinstance(payload, dict) else {}
+
+
+def request_env(payload):
+    """Variabili mandate con la richiesta ("env"); se non sono un oggetto, nessuna."""
+    return payload.get("env") if isinstance(payload.get("env"), dict) else {}
+
+
 def setting(payload, name, default):
-    """Valore di una variabile: prima quella mandata con la richiesta ("env"), poi l'ambiente del processo."""
-    env = payload.get("env") if isinstance(payload.get("env"), dict) else {}
-    return env.get(name, default)
+    """Valore di una variabile mandata con la richiesta ("env"), o `default` se manca
+    (per DEFAULT_HORIZON il default viene dall'ambiente del processo)."""
+    return request_env(payload).get(name, default)
 
 
 def as_horizon(value):
-    """Orizzonte come intero positivo, o None se il valore non lo è."""
+    """Intero fra 1 e MAX_HORIZON, o None se il valore non lo è."""
     try:
         number = int(str(value).strip())
     except (TypeError, ValueError):
         return None
-    return number if number >= 1 and not isinstance(value, bool) else None
+    return number if 1 <= number <= MAX_HORIZON and not isinstance(value, bool) else None
 
 
 def first_problem(checks):
@@ -59,7 +72,7 @@ def models():
 
 @app.post("/predict")
 def predict():
-    payload = request.get_json(silent=True) or {}
+    payload = read_payload()
     series = payload.get("time_series") or []
     forecaster = FORECASTERS.get(payload.get("model"))
     horizon = as_horizon(payload.get("horizon", setting(payload, "DEFAULT_HORIZON", DEFAULT_HORIZON)))
@@ -70,14 +83,14 @@ def predict():
         (lambda: len(series) < forecaster.min_points,
          lambda: f"Il modello {payload.get('model')} richiede almeno {forecaster.min_points} punti, ricevuti {len(series)}."),
         (lambda: horizon is None,
-         lambda: "L'orizzonte (horizon o DEFAULT_HORIZON) deve essere un intero positivo."),
+         lambda: f"L'orizzonte (horizon o DEFAULT_HORIZON) deve essere un intero fra 1 e {MAX_HORIZON}."),
     ])
     if problem:
         return jsonify({"errore": problem}), 400
 
-    try:
-        values = forecaster([point["value"] for point in series], horizon, payload.get("env") or {})
+    try:  # prima le date: una richiesta impossibile fallisce prima del calcolo
         timestamps = next_timestamps([point["timestamp"] for point in series], horizon)
+        values = forecaster([point["value"] for point in series], horizon, request_env(payload))
     except ValueError as exc:  # impostazione non valida per quel modello: si corregge
         return jsonify({"errore": f"{payload.get('model')}: {exc}."}), 400
     except Exception as exc:  # guasto di calcolo: si logga e si risponde 500
@@ -93,20 +106,21 @@ def predict():
 
 @app.post("/federated")
 def federated():
-    payload = request.get_json(silent=True) or {}
+    payload = read_payload()
     target = payload.get("target") or []
     clients = payload.get("clients") or []
     horizon = as_horizon(payload.get("horizon", setting(payload, "DEFAULT_HORIZON", DEFAULT_HORIZON)))
     order = as_horizon(payload.get("order", 5))
     problem = first_problem([
         (lambda: not target, lambda: "Serve la serie bersaglio (target)."),
-        (lambda: horizon is None or order is None, lambda: "Orizzonte e ordine devono essere interi positivi."),
+        (lambda: horizon is None or order is None,
+         lambda: f"Orizzonte e ordine devono essere interi fra 1 e {MAX_HORIZON}."),
     ])
     if problem:
         return jsonify({"errore": problem}), 400
     try:
-        result = federated_ar([p["value"] for p in target], [[p["value"] for p in c] for c in clients], order, horizon)
         timestamps = next_timestamps([p["timestamp"] for p in target], horizon)
+        result = federated_ar([p["value"] for p in target], [[p["value"] for p in c] for c in clients], order, horizon)
     except (ValueError, KeyError, TypeError) as exc:
         return jsonify({"errore": f"Modello federato: {exc}."}), 400
     return jsonify({
@@ -118,7 +132,7 @@ def federated():
 
 @app.post("/metrics")
 def metrics():
-    payload = request.get_json(silent=True) or {}
+    payload = read_payload()
     try:
         errors = ForecastErrors(payload.get("forecast"), payload.get("actual"),
                                 payload.get("history"), payload.get("season", 1))

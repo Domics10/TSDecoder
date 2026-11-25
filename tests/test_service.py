@@ -65,8 +65,16 @@ class SeasonalForecasterTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             SeasonalForecaster()([1, 2], 1, {"SEASON_PERIOD": "9"})
 
-    def test_serve_un_periodo_intero(self):
-        self.assertEqual(SeasonalForecaster().min_points, 12)
+    def test_il_periodo_si_controlla_sui_punti(self):
+        # Con un periodo corto bastano meno dei 12 punti del periodo di base.
+        self.assertEqual(SeasonalForecaster()([1, 2, 3, 4, 5], 2, {"SEASON_PERIOD": "3"}), [3, 4])
+        with self.assertRaisesRegex(ValueError, "servono almeno 12 punti"):
+            SeasonalForecaster()([1, 2, 3, 4, 5], 2)
+
+    def test_periodo_non_intero(self):
+        for value in ["tre", "2.5", "0"]:
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "SEASON_PERIOD"):
+                SeasonalForecaster()([1, 2, 3, 4], 1, {"SEASON_PERIOD": value})
 
 
 class NextTimestampsTest(unittest.TestCase):
@@ -102,6 +110,10 @@ class NextTimestampsTest(unittest.TestCase):
 
     def test_anno_e_mese(self):
         self.assertEqual(next_timestamps(["1982-01", "1982-02", "1982-03"], 1), ["1982-04-01T00:00:00Z"])
+
+    def test_un_punto_solo_non_ha_passo(self):
+        with self.assertRaisesRegex(ValueError, "almeno due date"):
+            next_timestamps(["2026-01-01"], 2)
 
 
 class TSDecoderForecasterTest(unittest.TestCase):
@@ -179,7 +191,7 @@ class AppTest(unittest.TestCase):
 
     def test_elenco_modelli_con_requisiti(self):
         models = {m["name"]: m["min_points"] for m in self.client.get("/models").get_json()}
-        self.assertEqual(models, {"TSDecoder": 90, "linear": 2, "naive": 1, "seasonal": 12})
+        self.assertEqual(models, {"TSDecoder": 90, "linear": 2, "naive": 2, "seasonal": 2})
 
     def test_previsione_lineare(self):
         body = self.predict(model="linear", time_series=self.series(3), request_id="r1",
@@ -211,12 +223,30 @@ class AppTest(unittest.TestCase):
                          ["2026-01-29T00:00:00Z", "2026-01-30T00:00:00Z", "2026-01-31T00:00:00Z"])
         self.assertEqual(self.client.post("/federated", json={"target": []}).status_code, 400)
 
+    def test_stagionale_con_periodo_corto(self):
+        body = self.predict(model="seasonal", time_series=self.series(5), env={"SEASON_PERIOD": "3"}, horizon=2).get_json()
+        self.assertEqual([p["value"] for p in body["predictions"]], [2.0, 3.0])
+
+    def test_corpo_che_non_e_un_oggetto(self):
+        for path in ["/predict", "/federated", "/metrics"]:
+            with self.subTest(path=path):
+                response = self.client.post(path, json=[1, 2])
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("errore", response.get_json())
+        response = self.predict(model="linear", time_series=self.series(3), env=["DEFAULT_HORIZON"], horizon=2)
+        self.assertEqual(response.status_code, 200)
+
     def test_rifiuti_con_motivo(self):
         cases = [
             ({"model": "boh", "time_series": self.series(3)}, "Modello sconosciuto"),
             ({"model": "TSDecoder", "time_series": self.series(3)}, "almeno 90 punti"),
             ({"model": "linear", "time_series": self.series(1)}, "almeno 2 punti"),
             ({"model": "linear", "time_series": self.series(3), "horizon": 0}, "orizzonte"),
+            ({"model": "linear", "time_series": self.series(3), "horizon": 1001}, "orizzonte"),
+            ({"model": "naive", "time_series": self.series(1)}, "almeno 2 punti"),
+            ({"model": "seasonal", "time_series": self.series(5)}, "servono almeno 12 punti"),
+            ({"model": "seasonal", "time_series": self.series(5), "env": {"SEASON_PERIOD": "tre"}}, "SEASON_PERIOD"),
+            ({"model": "linear", "time_series": self.series(3), "env": {"DEFAULT_HORIZON": "100000"}}, "orizzonte"),
         ]
         for payload, expected in cases:
             with self.subTest(expected=expected):

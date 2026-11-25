@@ -1,29 +1,16 @@
-FROM --platform=arm64 ubuntu:focal
+# Immagine di addestramento e validazione (main.py). Per il servizio di previsione c'è Dockerfile.app.
+#   docker build -t tsdecoder .
+#   docker run --rm tsdecoder                          # validazione sui pesi salvati
+#   docker run --rm tsdecoder python main.py --addestra
+FROM python:3.11-slim
 
-#Sistema e basilari
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    build-essential \
-    python3-dev \
-    python3-pip \
-    libx11-dev \
-    libxext-dev \
-    libxrender-dev \
-    libfontconfig1-dev \
-    libfreetype6-dev \
-    libxfixes-dev \
-    libx11-xcb-dev \
-    libxcb-glx0-dev
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MPLBACKEND=Agg
+WORKDIR /home/app
 
-#Upgrade pip
-RUN pip3 install --upgrade pip && pip3 --version
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.3.1
 COPY requirements.txt .
-RUN pip3 install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-#definisco l'enviroment
-ENV APPDIR /home/app
-WORKDIR $APPDIR
-
-#Copio i file ed test di esecuzione
 COPY . .
-RUN chmod u+x ./main.py
-#CMD ["python3", "./main.py"]
+
+CMD ["python", "main.py"]

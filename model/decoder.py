@@ -52,7 +52,6 @@ class SelfAttention(nn.Module):
         self.heads_QKV = LinearProjection(d_model, c1=c1)
         self.softmax = nn.Softmax(dim=-1)
         self.dropout = nn.Dropout(p=dropout_probability)
-        self.attention_weights = None #Cache purposes ex visualization 
 
     def Attention(self, encodings): 
         ''' MA = softmax(QK_t + M)'''
@@ -74,17 +73,13 @@ class SelfAttention(nn.Module):
         )
         return subsequent_mask == 0
 
-    def forward(self, head_encodings, cache):
-        attention_weights = self.Attention(head_encodings)
-        if cache:
-            self.attention_weights = attention_weights
-        return attention_weights
+    def forward(self, head_encodings):
+        return self.Attention(head_encodings)
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, heads, d_model, dropout_probability, masked, c1, cache):
+    def __init__(self, heads, d_model, dropout_probability, masked, c1):
         super().__init__()
         assert d_model % heads == 0, f'Model dimension must be divisible by the number of heads.'
-        self.cache = cache
         self.heads = heads
         self.d_model = d_model
         self.d_heads = int(d_model / heads)
@@ -96,18 +91,13 @@ class MultiHeadAttention(nn.Module):
         self.proj_w = nn.Linear(heads, 1)
     
     def forward(self, encodings):
-        for i, head in enumerate(self.selfattention):
-            partial_rapresentation = head(encodings, self.cache)
-            if i == 0:
-                concatenated_rapresentation = partial_rapresentation
-            else:
-                concatenated_rapresentation = torch.cat((concatenated_rapresentation, partial_rapresentation), dim=1)
+        concatenated_rapresentation = torch.cat([head(encodings) for head in self.selfattention], dim=1)
         concatenated_rapresentation = self.proj_z(concatenated_rapresentation).transpose(1, 3)
         concatenated_rapresentation = self.proj_w(concatenated_rapresentation)
         return concatenated_rapresentation
 
 class Decoder(nn.Module):
-    def __init__(self, heads, d_model, n_out=1, dropout_probability=0.1, masked=True, c1=4, cache=True, c_ff=4):
+    def __init__(self, heads, d_model, n_out=1, dropout_probability=0.1, masked=True, c1=4, c_ff=4):
         super().__init__()
         self.in_norm_layer = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout_probability)
@@ -115,8 +105,7 @@ class Decoder(nn.Module):
                                                           d_model, 
                                                           dropout_probability, 
                                                           masked, 
-                                                          c1, 
-                                                          cache)
+                                                          c1)
         self.in_skip_connection = SkipConnection()
         self.hid_norm_layer = nn.LayerNorm(d_model)
         self.feed_forward = FeedForward(d_model, d_model*c_ff, d_model)
@@ -135,19 +124,21 @@ class Decoder(nn.Module):
         return x
 
 class Trainer:
-    def __init__(self, model, criterion, optimizer):
+    """Addestra il modello; `save` (opzionale) riceve il modello quando la loss di validazione tocca un nuovo
+    minimo, o alla fine se non c'è validazione."""
+    def __init__(self, model, criterion, optimizer, save=None):
         self.model = model
         self.criterion = criterion
         self.optimizer = optimizer
-        self.loss_over_epoch = pd.DataFrame(columns=['epoch', 't_loss', 'v_loss'])
+        self.save = save or (lambda model: None)
 
     def train(self, train_loader, num_epochs, val_loader=None, verbose=False):
-        self.model.train()
-
+        rows = []
+        best = math.inf
         for epoch in range(num_epochs):
+            self.model.train()  # a ogni epoca: evaluate() lascia il modello in eval
             running_loss = 0.0
             for i, (inputs, targets) in enumerate(train_loader):
-                inputs, targets = (inputs, targets)
                 self.optimizer.zero_grad()
                 outputs = self.model(inputs)
                 loss = self.criterion(outputs, targets)
@@ -157,11 +148,16 @@ class Trainer:
                 running_loss += loss.item()
                 if i % 5000 == 0 and verbose:
                     print(f'Predict: {outputs} while target was {targets}')
-            val_loss = self.evaluate(val_loader)
             epoch_loss = running_loss / len(train_loader)
+            val_loss = self.evaluate(val_loader) if val_loader is not None else math.nan
             print(f"Epoch [{epoch + 1}/{num_epochs}] Train Loss: {epoch_loss:.4f} Val Loss: {val_loss:.4f}")
-            self.loss_over_epoch = pd.concat([self.loss_over_epoch, pd.DataFrame({'epoch': epoch, 't_loss': epoch_loss, 'v_loss': val_loss}, index=[0])], ignore_index=True)
-        return self.loss_over_epoch
+            if val_loss < best:
+                best = val_loss
+                self.save(self.model)
+            rows.append({'epoch': epoch, 't_loss': epoch_loss, 'v_loss': val_loss})
+        if val_loader is None:
+            self.save(self.model)
+        return pd.DataFrame(rows, columns=['epoch', 't_loss', 'v_loss'])
 
     def evaluate(self, val_loader):
         self.model.eval()
@@ -173,18 +169,7 @@ class Trainer:
                 loss = self.criterion(outputs, targets)
                 total_loss += loss.item()
 
-        avg_loss = total_loss / len(val_loader)
-        print(f"Validation Error: {avg_loss:.4f}")
-        if avg_loss <= 0.05:
-            module = utils.utils()
-            module.rename('tsdecoder')
-            module.save(self.model)
-        return avg_loss
-
-    def forecast(self, starting_window, horizon):
-        forecaster = Forecaster(self.model)
-        forecast = forecaster(starting_window, horizon)
-        return forecast
+        return total_loss / len(val_loader)
 
 class Forecaster:
     def __init__(self, model):
@@ -209,32 +194,32 @@ class Forecaster:
 def decoder_training_pipeline(train_data, valid_data):
     module = utils.utils()
     decoder = Decoder(module.get_heads(), module.get_d_model(), c1=module.get_c1())
-    optimizer = torch.optim.Adam(decoder.parameters(), lr=0.01)
+    optimizer = torch.optim.Adam(decoder.parameters(), lr=module.get_lr())
     criterion = F.mse_loss  
 
-    train_data =  utils.TimeSeriesData(train_data, 90)
-    valid_data = utils.TimeSeriesData(valid_data, 90)
+    train_data =  utils.TimeSeriesData(train_data, module.get_d_model())
+    valid_data = utils.TimeSeriesData(valid_data, module.get_d_model())
 
     trainloader = DataLoader(dataset=train_data,
-                            batch_size=32,
+                            batch_size=module.get_batch_size(),
                             shuffle=False,
                             num_workers=1
                             )
     
     validationloader = DataLoader(dataset=valid_data,
-                                batch_size=32,
+                                batch_size=module.get_batch_size(),
                                 shuffle=False,
                                 num_workers=1
                                 )
-    trainer = Trainer(decoder, criterion, optimizer)
+    trainer = Trainer(decoder, criterion, optimizer, save=module.save)
     loss_over_epoch = trainer.train(trainloader, module.get_epochs(), validationloader)
     return loss_over_epoch
     
 def decoder_forecasting_pipeline(starting_window, horizon):
     module = utils.utils()
-    module.rename('tsdecoder')
     decoder = Decoder(module.get_heads(), module.get_d_model(), c1=module.get_c1())
     decoder = module.load(decoder)
+    decoder.eval()
     forecaster = Forecaster(decoder)
     transformed_window = starting_window.unsqueeze(0)
     forecast = forecaster(transformed_window, horizon)

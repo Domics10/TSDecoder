@@ -6,6 +6,10 @@ Un modello nuovo si aggiunge con una classe e una voce in `build_registry`.
 """
 import numpy as np
 import pandas as pd
+import torch
+
+import utils
+from model.decoder import Decoder, Forecaster
 
 
 def rescale(values, src, dst):
@@ -30,26 +34,45 @@ class LinearForecaster:
 
 
 class NaiveForecaster:
-    """Ripete l'ultimo valore (random walk): il riferimento da battere su serie come i prezzi."""
+    """Ripete l'ultimo valore (random walk): il riferimento da battere su serie come i prezzi.
+    Basterebbe un punto, ma per il passo delle date ne servono due."""
 
-    min_points = 1
+    min_points = 2
 
     def __call__(self, values, horizon, settings=None):
         return [float(values[-1])] * horizon
 
 
+def int_setting(settings, name, default):
+    """Variabile intera della richiesta (le variabili arrivano come stringhe), o `default` se manca."""
+    value = (settings or {}).get(name, default)
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        raise ValueError(f"{name} deve essere un intero, non {value!r}") from None
+
+
 class SeasonalForecaster:
     """Ripete il valore di un periodo prima (stagionale naive). Periodo di base 12 (dati mensili);
-    si cambia con la variabile SEASON_PERIOD (es. 5 per i giorni di borsa di una settimana)."""
+    si cambia con la variabile SEASON_PERIOD (es. 5 per i giorni di borsa di una settimana).
+
+    Quanti punti servono dipende dal periodo: `min_points` è il minimo assoluto (le date vogliono due
+    punti), il periodo rispetto ai punti lo controlla la previsione.
+    """
+
+    min_points = 2
 
     def __init__(self, period=12):
         self.period = period
-        self.min_points = period
 
     def __call__(self, values, horizon, settings=None):
-        period = int((settings or {}).get("SEASON_PERIOD", self.period))
-        if not 1 <= period <= len(values):
-            raise ValueError(f"SEASON_PERIOD deve stare fra 1 e {len(values)}")
+        period = int_setting(settings, "SEASON_PERIOD", self.period)
+        problem = next((reason for condition, reason in [
+            (period < 1, f"SEASON_PERIOD deve essere almeno 1, non {period}"),
+            (period > len(values), f"con SEASON_PERIOD={period} servono almeno {period} punti, ricevuti {len(values)}"),
+        ] if condition), None)
+        if problem:
+            raise ValueError(problem)
         last_period = values[-period:]
         return [float(last_period[i % period]) for i in range(horizon)]
 
@@ -70,12 +93,7 @@ class TSDecoderForecaster:
 
     @classmethod
     def load(cls, train_csv="./data/air-temp-monthly-mean.csv", train_ratio=0.8):
-        import torch  # import pesante: solo se il modello si carica
-        import utils
-        from model.decoder import Decoder, Forecaster
-
         config = utils.utils()
-        config.rename("tsdecoder")
         decoder = config.load(Decoder(config.get_heads(), config.get_d_model(), c1=config.get_c1()))
         decoder.eval()
 
@@ -84,8 +102,6 @@ class TSDecoderForecaster:
         return cls(decoder, Forecaster, config.get_d_model(), (train.min(), train.max()))
 
     def __call__(self, values, horizon, settings=None):
-        import torch
-
         window = np.asarray(values[-self.min_points:], dtype=float)
         input_range = (window.min(), window.max())
         scaled = rescale(window, input_range, self.train_range)
@@ -106,7 +122,9 @@ def build_registry():
 
 
 def next_timestamps(timestamps, horizon):
-    """Timestamp successivi all'ultimo, con il passo della serie in ingresso."""
+    """Timestamp successivi all'ultimo, con il passo della serie in ingresso (servono almeno due date)."""
+    if len(timestamps) < 2:
+        raise ValueError("servono almeno due date per dedurre il passo della serie")
     # format="ISO8601": le date possono avere forme diverse nella stessa serie (es. "2026-01-01" seguite
     # da previsioni "2026-02-01T00:00:00Z" quando due modelli sono in catena).
     index = pd.DatetimeIndex(pd.to_datetime(timestamps, utc=True, format="ISO8601"))
