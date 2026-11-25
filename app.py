@@ -1,7 +1,8 @@
 """Servizio HTTP di previsione: solo calcolo, nessuna validazione complessa.
 
 POST /predict
-  ingresso: {"time_series": [{"timestamp", "value"}], "model", "request_id", "auth", "horizon"?}
+  ingresso: {"time_series": [{"timestamp", "value"}], "model", "request_id", "auth", "horizon"?, "env"?}
+  "env": variabili del container impostate dal client (es. DEFAULT_HORIZON); valgono per questa richiesta.
   uscita:   {"predictions": [{"timestamp", "value"}], "request_id", "auth"}
 GET /status
 GET /models  -> [{"name", "min_points"}]
@@ -13,10 +14,25 @@ from flask import Flask, jsonify, request
 
 from forecasters import build_registry, next_timestamps
 
-DEFAULT_HORIZON = int(os.environ.get("DEFAULT_HORIZON", "10"))
+DEFAULT_HORIZON = os.environ.get("DEFAULT_HORIZON", "10")
 
 app = Flask(__name__)
 FORECASTERS = build_registry()
+
+
+def setting(payload, name, default):
+    """Valore di una variabile: prima quella mandata con la richiesta ("env"), poi l'ambiente del processo."""
+    env = payload.get("env") if isinstance(payload.get("env"), dict) else {}
+    return env.get(name, default)
+
+
+def as_horizon(value):
+    """Orizzonte come intero positivo, o None se il valore non lo è."""
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 1 and not isinstance(value, bool) else None
 
 
 def first_problem(checks):
@@ -39,15 +55,15 @@ def predict():
     payload = request.get_json(silent=True) or {}
     series = payload.get("time_series") or []
     forecaster = FORECASTERS.get(payload.get("model"))
-    horizon = payload.get("horizon", DEFAULT_HORIZON)
+    horizon = as_horizon(payload.get("horizon", setting(payload, "DEFAULT_HORIZON", DEFAULT_HORIZON)))
 
     problem = first_problem([
         (lambda: forecaster is None,
          lambda: f"Modello sconosciuto: {payload.get('model')!r}. Disponibili: {', '.join(sorted(FORECASTERS))}."),
         (lambda: len(series) < forecaster.min_points,
          lambda: f"Il modello {payload.get('model')} richiede almeno {forecaster.min_points} punti, ricevuti {len(series)}."),
-        (lambda: not isinstance(horizon, int) or horizon < 1,
-         lambda: "L'orizzonte deve essere un intero positivo."),
+        (lambda: horizon is None,
+         lambda: "L'orizzonte (horizon o DEFAULT_HORIZON) deve essere un intero positivo."),
     ])
     if problem:
         return jsonify({"errore": problem}), 400

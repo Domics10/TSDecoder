@@ -15,6 +15,8 @@ docker run -p 5002:5002 tsdecoder-app
 ```
 
 Variabili d'ambiente: `PORT` (default 5002), `DEFAULT_HORIZON` (punti da prevedere, default 10).
+`DEFAULT_HORIZON` si può anche mandare con la richiesta, nel campo `env` (`{"env": {"DEFAULT_HORIZON": "5"}}`):
+vince su quella del processo; `horizon` nella richiesta vince su tutte e due.
 
 Modelli disponibili:
 - `linear`: regressione lineare, da 2 punti in su;

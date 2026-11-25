@@ -114,6 +114,14 @@ class AppTest(unittest.TestCase):
                          ["2026-01-04T00:00:00Z", "2026-01-05T00:00:00Z"])
         np.testing.assert_allclose([p["value"] for p in body["predictions"]], [3, 4], atol=1e-9)
 
+    def test_variabili_dalla_richiesta(self):
+        body = self.predict(model="linear", time_series=self.series(3), env={"DEFAULT_HORIZON": "4"}).get_json()
+        self.assertEqual(len(body["predictions"]), 4)
+        body = self.predict(model="linear", time_series=self.series(3), env={"DEFAULT_HORIZON": "4"}, horizon=2).get_json()
+        self.assertEqual(len(body["predictions"]), 2)
+        response = self.predict(model="linear", time_series=self.series(3), env={"DEFAULT_HORIZON": "tanti"})
+        self.assertEqual(response.status_code, 400)
+
     def test_rifiuti_con_motivo(self):
         cases = [
             ({"model": "boh", "time_series": self.series(3)}, "Modello sconosciuto"),
